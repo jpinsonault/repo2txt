@@ -1,3 +1,19 @@
+// === NEW: Simple settings helpers (shared across pages) ===
+const SETTINGS_KEY = 'repo2txtSettings';
+
+function loadSettings() {
+    try {
+        return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function saveSettings(partial) {
+    const current = loadSettings();
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...current, ...partial }));
+}
+
 // Display directory structure
 function displayDirectoryStructure(tree) {
     tree = tree.filter(item => item.type === 'blob').sort(sortContents);
@@ -9,6 +25,10 @@ function displayDirectoryStructure(tree) {
     const commonExtensions = ['.js', '.py', '.java', '.cpp', '.html', '.css', '.ts', '.jsx', '.tsx'];
     const directoryStructure = {};
     const extensionCheckboxes = {};
+
+    // Pull saved extension states
+    const settings = loadSettings();
+    const savedExtensionStates = settings.extensionStates || {}; // { 'js': true, 'py': false, ... }
 
     // Build directory structure
     tree.forEach(item => {
@@ -72,7 +92,13 @@ function displayDirectoryStructure(tree) {
         
         const extension = name.split('.').pop().toLowerCase();
         const isCommonFile = commonExtensions.includes('.' + extension);
-        checkbox.checked = isCommonFile;
+
+        // Apply saved extension state if available; otherwise fall back to defaults
+        let shouldCheck = isCommonFile;
+        if (Object.prototype.hasOwnProperty.call(savedExtensionStates, extension)) {
+            shouldCheck = !!savedExtensionStates[extension];
+        }
+        checkbox.checked = shouldCheck;
 
         if (!(extension in extensionCheckboxes)) {
             extensionCheckboxes[extension] = {
@@ -143,6 +169,8 @@ function displayDirectoryStructure(tree) {
         if (event.target.type === 'checkbox') {
             updateParentCheckbox(event.target);
             updateExtensionCheckboxes();
+            // Persist extension states whenever any checkbox changes
+            persistExtensionStates();
         }
     });
 
@@ -196,6 +224,19 @@ function displayDirectoryStructure(tree) {
         }
     }
 
+    // persist current extension states into settings
+    function persistExtensionStates() {
+        const map = {};
+        for (const [extension, group] of Object.entries(extensionCheckboxes)) {
+            const extCB = group.checkbox;
+            // Only store a concrete on/off; skip indeterminate to avoid forcing next time
+            if (!extCB.indeterminate) {
+                map[extension] = !!extCB.checked;
+            }
+        }
+        saveSettings({ extensionStates: map });
+    }
+
     function createExtensionCheckboxesContainer() {
         const extentionCheckboxesContainer = document.getElementById('extentionCheckboxes');
         extentionCheckboxesContainer.innerHTML = '';
@@ -215,6 +256,13 @@ function displayDirectoryStructure(tree) {
             extCheckboxLi.appendChild(extCheckbox);
             extCheckboxLi.appendChild(document.createTextNode('.' + extension));
             extentionCheckboxesContainerUl.appendChild(extCheckboxLi);
+
+            // Apply saved on/off state to the extension checkbox UI
+            if (Object.prototype.hasOwnProperty.call(savedExtensionStates, extension)) {
+                extCheckbox.checked = !!savedExtensionStates[extension];
+                extCheckbox.indeterminate = false;
+            }
+
             extCheckbox.addEventListener('change', function() {
                 const children = checkbox.children;
                 children.forEach(child => {
@@ -222,6 +270,8 @@ function displayDirectoryStructure(tree) {
                     child.indeterminate = false;
                     updateParentCheckbox(child);
                 });
+                // Persist change
+                persistExtensionStates();
             });
         }
     }
@@ -302,7 +352,7 @@ function formatRepoContents(contents) {
 
     const formattedText = `Directory Structure:\n\n${index}\n${text}`;
     try {
-        const { encode, decode } = GPTTokenizer_cl100k_base;
+        const { encode } = GPTTokenizer_cl100k_base;
         const tokensCount = encode(formattedText).length;
         document.getElementById('tokenCount').innerHTML = `Approximate Token Count: ${tokensCount} <a href="https://github.com/niieani/gpt-tokenizer" target="_blank" class="text-blue-500 hover:text-blue-700 underline">(Using cl100k_base tokenizer)</a>`;
     } catch (error) {
@@ -312,4 +362,4 @@ function formatRepoContents(contents) {
     return formattedText;
 }
 
-export { displayDirectoryStructure, sortContents, getSelectedFiles, formatRepoContents };
+export { displayDirectoryStructure, sortContents, getSelectedFiles, formatRepoContents, loadSettings, saveSettings };

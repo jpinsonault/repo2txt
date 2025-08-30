@@ -1,37 +1,230 @@
-import { displayDirectoryStructure, getSelectedFiles, formatRepoContents } from './utils.js';
+import { displayDirectoryStructure, getSelectedFiles, formatRepoContents, loadSettings, saveSettings } from './utils.js';
 
-// Load saved token on page load
+// Load saved settings (token, URL, token-info state) on page load
 document.addEventListener('DOMContentLoaded', function() {
     lucide.createIcons();
     setupShowMoreInfoButton();
-    loadSavedToken();
+    loadSavedSettings();
+
+    // Input persistence as user types
+    const repoUrlInput = document.getElementById('repoUrl');
+    const accessTokenInput = document.getElementById('accessToken');
+    if (repoUrlInput) {
+        repoUrlInput.addEventListener('input', () => {
+            saveSettings({ repoUrl: repoUrlInput.value || '' });
+        });
+    }
+    if (accessTokenInput) {
+        accessTokenInput.addEventListener('input', () => {
+            saveToken(accessTokenInput.value || '');
+        });
+    }
+
+    // One-click button
+    const oneClickButton = document.getElementById('oneClickButton');
+    if (oneClickButton) {
+        oneClickButton.addEventListener('click', runOneClickFlow);
+    }
 });
 
-// Load saved token from local storage
-function loadSavedToken() {
-    const savedToken = localStorage.getItem('githubAccessToken');
+/** Robust copy helper:
+ *  1) navigator.clipboard.writeText (secure contexts)
+ *  2) execCommand('copy') on a temporary textarea
+ *  3) Final fallback: select #outputText and prompt user to press Ctrl/Cmd+C
+ *  Returns true if copied automatically; false if user needs to press Ctrl/Cmd+C
+ */
+async function copyToClipboard(text) {
+    // Try modern API
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (_) { /* continue */ }
+
+    // Try execCommand on a temp textarea (not display:none)
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) return true;
+    } catch (_) { /* continue */ }
+
+    // Final fallback: select the visible outputText and ask the user to press Ctrl/Cmd+C
+    const output = document.getElementById('outputText');
+    if (output) {
+        output.focus();
+        output.select();
+    }
+    return false;
+}
+
+function flashButtonMessage(button, text, timeoutMs = 1800) {
+    if (!button) return;
+    const original = button.dataset.original || button.innerHTML;
+    button.dataset.original = original;
+    button.innerHTML = `<i data-lucide="keyboard" class="w-5 h-5 mr-2"></i>${text}`;
+    lucide.createIcons();
+    setTimeout(() => {
+        button.innerHTML = button.dataset.original;
+        lucide.createIcons();
+    }, timeoutMs);
+}
+
+function setButtonBusy(button, busyText = 'Working…') {
+    if (!button) return;
+    button.dataset.original = button.dataset.original || button.innerHTML;
+    button.disabled = true;
+    button.classList.add('opacity-70', 'cursor-not-allowed');
+    button.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-5 w-5 inline-block" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" fill="none" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4A4 4 0 004 12z"></path>
+    </svg>${busyText}`;
+    lucide.createIcons();
+}
+function clearButtonBusy(button, successText) {
+    if (!button) return;
+    if (successText) {
+        button.innerHTML = `<i data-lucide="check" class="w-5 h-5 mr-2"></i>${successText}`;
+        lucide.createIcons();
+        setTimeout(() => {
+            button.innerHTML = button.dataset.original || button.innerText;
+            button.disabled = false;
+            button.classList.remove('opacity-70', 'cursor-not-allowed');
+            lucide.createIcons();
+        }, 1200);
+    } else {
+        button.innerHTML = button.dataset.original || button.innerText;
+        button.disabled = false;
+        button.classList.remove('opacity-70', 'cursor-not-allowed');
+        lucide.createIcons();
+    }
+}
+
+async function runOneClickFlow() {
+    const oneClickButton = document.getElementById('oneClickButton');
+    setButtonBusy(oneClickButton, 'Fetching…');
+
+    const repoUrl = document.getElementById('repoUrl').value.trim();
+    const accessToken = document.getElementById('accessToken').value.trim();
+    const outputText = document.getElementById('outputText');
+    outputText.value = '';
+
+    // Persist inputs
+    saveToken(accessToken);
+    saveSettings({ repoUrl });
+
+    try {
+        // 1) Fetch and display structure
+        const { owner, repo, lastString } = parseRepoUrl(repoUrl);
+        let refFromUrl = '';
+        let pathFromUrl = '';
+
+        if (lastString) {
+            const references = await getReferences(owner, repo, accessToken);
+            const allRefs = [...references.branches, ...references.tags];
+            const matchingRef = allRefs.find(ref => lastString.startsWith(ref));
+            if (matchingRef) {
+                refFromUrl = matchingRef;
+                pathFromUrl = lastString.slice(matchingRef.length + 1);
+            } else {
+                refFromUrl = lastString;
+            }
+        }
+
+        const sha = await fetchRepoSha(owner, repo, refFromUrl, pathFromUrl, accessToken);
+        const tree = await fetchRepoTree(owner, repo, sha, accessToken);
+
+        displayDirectoryStructure(tree);
+        document.getElementById('generateTextButton').style.display = 'flex';
+        document.getElementById('downloadZipButton').style.display = 'flex';
+
+        // 2) Generate text using current (saved/default) extension selections
+        setButtonBusy(oneClickButton, 'Generating…');
+        const selectedFiles = getSelectedFiles();
+        if (selectedFiles.length === 0) {
+            throw new Error('No files selected after applying extension filters.');
+        }
+        const fileContents = await fetchFileContents(selectedFiles, accessToken);
+        const formattedText = formatRepoContents(fileContents);
+        outputText.value = formattedText;
+        document.getElementById('copyButton').style.display = 'flex';
+        document.getElementById('downloadButton').style.display = 'flex';
+
+        // 3) Copy to clipboard (with graceful fallback)
+        setButtonBusy(oneClickButton, 'Copying…');
+        const copied = await copyToClipboard(formattedText);
+
+        if (copied) {
+            clearButtonBusy(oneClickButton, 'Copied!');
+        } else {
+            clearButtonBusy(oneClickButton, 'Press Ctrl/Cmd+C');
+        }
+    } catch (error) {
+        clearButtonBusy(oneClickButton);
+        outputText.value = `Error in one-click flow: ${error.message}\n\n` +
+            "Please ensure:\n" +
+            "1. The repository URL is correct and accessible.\n" +
+            "2. You have the necessary permissions to access the repository.\n" +
+            "3. If it's a private repository, you've provided a valid access token.\n" +
+            "4. The specified branch/tag and path (if any) exist in the repository.\n" +
+            "5. Your extension filters include at least one file type.";
+    }
+}
+
+function loadSavedSettings() {
+    const settings = loadSettings();
+
+    // Token: prefer new settings object; fall back to old key for backward compatibility
+    const legacyToken = localStorage.getItem('githubAccessToken');
+    const savedToken = settings.githubAccessToken || legacyToken || '';
     if (savedToken) {
         document.getElementById('accessToken').value = savedToken;
     }
-}
 
-// Save token to local storage
-function saveToken(token) {
-    if (token) {
-        localStorage.setItem('githubAccessToken', token);
-    } else {
-        localStorage.removeItem('githubAccessToken');
+    // Repo URL
+    if (settings.repoUrl) {
+        document.getElementById('repoUrl').value = settings.repoUrl;
+    }
+
+    // Token info expanded/collapsed state
+    const tokenInfo = document.getElementById('tokenInfo');
+    const showMoreInfoButton = document.getElementById('showMoreInfo');
+    if (settings.tokenInfoOpen) {
+        tokenInfo.classList.remove('hidden');
+        updateInfoIcon(showMoreInfoButton, tokenInfo);
     }
 }
 
-// Event listener for form submission
+// Save token (persist both new settings object and legacy key)
+function saveToken(token) {
+    if (token) {
+        localStorage.setItem('githubAccessToken', token);
+        saveSettings({ githubAccessToken: token });
+    } else {
+        localStorage.removeItem('githubAccessToken');
+        saveSettings({ githubAccessToken: '' });
+    }
+}
+
+// Event listener for form submission (manual flow)
 document.getElementById('repoForm').addEventListener('submit', async function (e) {
     e.preventDefault();
     const repoUrl = document.getElementById('repoUrl').value;
     const accessToken = document.getElementById('accessToken').value;
 
-    // Save token automatically
+    // Save token and repo URL automatically
     saveToken(accessToken);
+    saveSettings({ repoUrl });
 
     const outputText = document.getElementById('outputText');
     outputText.value = '';
@@ -71,7 +264,7 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
     }
 });
 
-// Event listener for generating text file
+// Event listener for generating text file (manual)
 document.getElementById('generateTextButton').addEventListener('click', async function () {
     const accessToken = document.getElementById('accessToken').value;
     const outputText = document.getElementById('outputText');
@@ -123,13 +316,15 @@ document.getElementById('downloadZipButton').addEventListener('click', async fun
     }
 });
 
-// Event listener for copying text to clipboard
-document.getElementById('copyButton').addEventListener('click', function () {
-    const outputText = document.getElementById('outputText');
-    outputText.select();
-    navigator.clipboard.writeText(outputText.value)
-        .then(() => console.log('Text copied to clipboard'))
-        .catch(err => console.error('Failed to copy text: ', err));
+// Event listener for copying text to clipboard (manual) — uses the same robust helper
+document.getElementById('copyButton').addEventListener('click', async function (e) {
+    const text = document.getElementById('outputText').value;
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (!ok) {
+        // Show a gentle hint on the button
+        flashButtonMessage(e.currentTarget, 'Press Ctrl/Cmd+C');
+    }
 });
 
 // Event listener for downloading text file
@@ -274,6 +469,10 @@ function setupShowMoreInfoButton() {
     showMoreInfoButton.addEventListener('click', function() {
         tokenInfo.classList.toggle('hidden');
         updateInfoIcon(this, tokenInfo);
+
+        // Persist whether the panel is open
+        const isOpen = !tokenInfo.classList.contains('hidden');
+        saveSettings({ tokenInfoOpen: isOpen });
     });
 }
 
