@@ -1,4 +1,3 @@
-// === NEW: Simple settings helpers (shared across pages) ===
 const SETTINGS_KEY = 'repo2txtSettings';
 
 function loadSettings() {
@@ -14,7 +13,6 @@ function saveSettings(partial) {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...current, ...partial }));
 }
 
-// Display directory structure
 function displayDirectoryStructure(tree) {
     tree = tree.filter(item => item.type === 'blob').sort(sortContents);
     const container = document.getElementById('directoryStructure');
@@ -25,12 +23,12 @@ function displayDirectoryStructure(tree) {
     const commonExtensions = ['.js', '.py', '.java', '.cpp', '.html', '.css', '.ts', '.jsx', '.tsx'];
     const directoryStructure = {};
     const extensionCheckboxes = {};
+    const sizeCache = new WeakMap();
 
-    // Pull saved extension states
     const settings = loadSettings();
-    const savedExtensionStates = settings.extensionStates || {}; // { 'js': true, 'py': false, ... }
+    const savedExtensionStates = settings.extensionStates || {};
+    const showSizeBars = settings.showSizeBars !== false;
 
-    // Build directory structure
     tree.forEach(item => {
         item.path = item.path.startsWith('/') ? item.path : '/' + item.path;
         const pathParts = item.path.split('/');
@@ -38,79 +36,143 @@ function displayDirectoryStructure(tree) {
 
         pathParts.forEach((part, index) => {
             part = part === '' ? './' : part;
-            if (!currentLevel[part]) {
-                currentLevel[part] = index === pathParts.length - 1 ? item : {};
+            if (index === pathParts.length - 1) {
+                if (!currentLevel[part]) {
+                    const sizeBytes = getInitialSizeBytes(item);
+                    currentLevel[part] = { ...item, sizeBytes };
+                }
+            } else {
+                if (!currentLevel[part]) {
+                    currentLevel[part] = {};
+                }
+                currentLevel = currentLevel[part];
             }
-            currentLevel = currentLevel[part];
         });
     });
 
-    function createTreeNode(name, item, parentUl) {
+    computeAllSizes(directoryStructure);
+    ensureSizeControls(showSizeBars);
+
+    const rootEntries = Object.entries(directoryStructure).sort((a, b) => {
+        const aSize = getNodeSizeBytes(a[1]);
+        const bSize = getNodeSizeBytes(b[1]);
+        if (bSize !== aSize) return bSize - aSize;
+        const aIsDir = isDirectoryNode(a[1]);
+        const bIsDir = isDirectoryNode(b[1]);
+        if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+        return a[0].localeCompare(b[0]);
+    });
+    const maxRoot = rootEntries.length ? Math.max(...rootEntries.map(e => getNodeSizeBytes(e[1]))) : 0;
+
+    for (const [name, item] of rootEntries) {
+        createTreeNode(name, item, rootUl, maxRoot);
+    }
+
+    createExtensionCheckboxesContainer();
+
+    container.addEventListener('change', function(event) {
+        if (event.target.type === 'checkbox') {
+            updateParentCheckbox(event.target);
+            updateExtensionCheckboxes();
+            persistExtensionStates();
+        }
+    });
+
+    function createTreeNode(name, item, parentUl, siblingMax) {
         const li = document.createElement('li');
+        li.className = 'my-2';
+
+        const row = document.createElement('div');
+        row.className = 'flex items-center flex-wrap gap-1';
+        li.appendChild(row);
+
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'mr-2';
-        
-        if (typeof item === 'object' && (!item.type || typeof item.type !== 'string')) {
-            // Directory node
-            createDirectoryNode(li, checkbox, name, item, parentUl);
+        row.appendChild(checkbox);
+
+        if (isDirectoryNode(item)) {
+            checkbox.classList.add('directory-checkbox');
+
+            const collapseButton = createCollapseButton();
+            row.appendChild(collapseButton);
+
+            appendIcon(row, 'folder');
+
+            const label = document.createElement('span');
+            label.textContent = name;
+            row.appendChild(label);
+
+            const sizeText = document.createElement('span');
+            sizeText.className = 'ml-2 text-xs text-gray-500';
+            sizeText.textContent = `(${formatBytes(getNodeSizeBytes(item))})`;
+            row.appendChild(sizeText);
+
+            const dirSize = getNodeSizeBytes(item);
+            const scaleMax = typeof siblingMax === 'number' && siblingMax > 0 ? siblingMax : dirSize || 1;
+            const dirBar = createSizeBar(scalePercent(dirSize, scaleMax), showSizeBars);
+            row.appendChild(dirBar);
+
+            const ul = document.createElement('ul');
+            ul.className = 'ml-6 mt-2';
+            li.appendChild(ul);
+
+            const entries = Object.entries(item).sort((a, b) => {
+                const aSize = getNodeSizeBytes(a[1]);
+                const bSize = getNodeSizeBytes(b[1]);
+                if (bSize !== aSize) return bSize - aSize;
+                const aIsDir = isDirectoryNode(a[1]);
+                const bIsDir = isDirectoryNode(b[1]);
+                if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+                return a[0].localeCompare(b[0]);
+            });
+
+            const maxChild = entries.length ? Math.max(...entries.map(e => getNodeSizeBytes(e[1]))) : 0;
+
+            for (const [childName, childItem] of entries) {
+                createTreeNode(childName, childItem, ul, maxChild);
+            }
+
+            addDirectoryCheckboxListener(checkbox, li);
+            addCollapseButtonListener(collapseButton, ul);
         } else {
-            // File node
-            createFileNode(li, checkbox, name, item);
+            const extension = name.split('.').pop().toLowerCase();
+            const isCommonFile = commonExtensions.includes('.' + extension);
+
+            let shouldCheck = isCommonFile;
+            if (Object.prototype.hasOwnProperty.call(savedExtensionStates, extension)) {
+                shouldCheck = !!savedExtensionStates[extension];
+            }
+            checkbox.checked = shouldCheck;
+
+            if (!(extension in extensionCheckboxes)) {
+                extensionCheckboxes[extension] = {
+                    checkbox: createExtensionCheckbox(extension),
+                    children: []
+                };
+            }
+            extensionCheckboxes[extension].children.push(checkbox);
+
+            appendIcon(row, 'file');
+
+            const labelWrap = document.createElement('span');
+            labelWrap.textContent = name;
+            row.appendChild(labelWrap);
+
+            const sizeText = document.createElement('span');
+            sizeText.className = 'ml-2 text-xs text-gray-500';
+            sizeText.textContent = `(${formatBytes(item.sizeBytes || 0)})`;
+            row.appendChild(sizeText);
+
+            const size = item.sizeBytes || 0;
+            const scaleMax = typeof siblingMax === 'number' && siblingMax > 0 ? siblingMax : size || 1;
+            const bar = createSizeBar(scalePercent(size, scaleMax), showSizeBars);
+            row.appendChild(bar);
         }
 
-        li.className = 'my-2';
         parentUl.appendChild(li);
         updateParentCheckbox(checkbox);
         updateExtensionCheckboxes();
-    }
-
-    function createDirectoryNode(li, checkbox, name, item, parentUl) {
-        checkbox.classList.add('directory-checkbox');
-        li.appendChild(checkbox);
-
-        const collapseButton = createCollapseButton();
-        li.appendChild(collapseButton);
-
-        appendIcon(li, 'folder');
-        li.appendChild(document.createTextNode(name));
-
-        const ul = document.createElement('ul');
-        ul.className = 'ml-6 mt-2';
-        li.appendChild(ul);
-        
-        for (const [childName, childItem] of Object.entries(item)) {
-            createTreeNode(childName, childItem, ul);
-        }
-
-        addDirectoryCheckboxListener(checkbox, li);
-        addCollapseButtonListener(collapseButton, ul);
-    }
-
-    function createFileNode(li, checkbox, name, item) {
-        checkbox.value = JSON.stringify({ url: item.url, path: item.path, urlType: item.urlType });
-        
-        const extension = name.split('.').pop().toLowerCase();
-        const isCommonFile = commonExtensions.includes('.' + extension);
-
-        // Apply saved extension state if available; otherwise fall back to defaults
-        let shouldCheck = isCommonFile;
-        if (Object.prototype.hasOwnProperty.call(savedExtensionStates, extension)) {
-            shouldCheck = !!savedExtensionStates[extension];
-        }
-        checkbox.checked = shouldCheck;
-
-        if (!(extension in extensionCheckboxes)) {
-            extensionCheckboxes[extension] = {
-                checkbox: createExtensionCheckbox(extension),
-                children: []
-            };
-        }
-        extensionCheckboxes[extension].children.push(checkbox);
-
-        li.appendChild(checkbox);
-        appendIcon(li, 'file');
-        li.appendChild(document.createTextNode(name));
     }
 
     function createCollapseButton() {
@@ -129,7 +191,7 @@ function displayDirectoryStructure(tree) {
 
     function addDirectoryCheckboxListener(checkbox, li) {
         checkbox.addEventListener('change', function() {
-            const childCheckboxes = li.querySelectorAll('input[type="checkbox"]');
+            const childCheckboxes = li.querySelectorAll('ul li > div > input[type="checkbox"]');
             childCheckboxes.forEach(childBox => {
                 childBox.checked = this.checked;
                 childBox.indeterminate = false;
@@ -158,22 +220,6 @@ function displayDirectoryStructure(tree) {
         return extCheckbox;
     }
 
-    for (const [name, item] of Object.entries(directoryStructure)) {
-        createTreeNode(name, item, rootUl);
-    }
-
-    createExtensionCheckboxesContainer();
-
-    // Add event listener to container for checkbox changes
-    container.addEventListener('change', function(event) {
-        if (event.target.type === 'checkbox') {
-            updateParentCheckbox(event.target);
-            updateExtensionCheckboxes();
-            // Persist extension states whenever any checkbox changes
-            persistExtensionStates();
-        }
-    });
-
     function updateParentCheckbox(checkbox) {
         if (!checkbox) return;
         const li = checkbox.closest('li');
@@ -182,12 +228,12 @@ function displayDirectoryStructure(tree) {
         const parentLi = li.parentElement.closest('li');
         if (!parentLi) return;
 
-        const parentCheckbox = parentLi.querySelector(':scope > input[type="checkbox"]');
-        const siblingCheckboxes = parentLi.querySelectorAll(':scope > ul > li > input[type="checkbox"]');
-        
+        const parentCheckbox = parentLi.querySelector(':scope > div > input[type="checkbox"]');
+        const siblingCheckboxes = parentLi.querySelectorAll(':scope > ul > li > div > input[type="checkbox"]');
+
         const checkedCount = Array.from(siblingCheckboxes).filter(cb => cb.checked).length;
         const indeterminateCount = Array.from(siblingCheckboxes).filter(cb => cb.indeterminate).length;
-        
+
         if (indeterminateCount !== 0) {
             parentCheckbox.checked = false;
             parentCheckbox.indeterminate = true;
@@ -202,7 +248,6 @@ function displayDirectoryStructure(tree) {
             parentCheckbox.indeterminate = true;
         }
 
-        // Recursively update parent checkboxes
         updateParentCheckbox(parentCheckbox);
     }
 
@@ -224,12 +269,10 @@ function displayDirectoryStructure(tree) {
         }
     }
 
-    // persist current extension states into settings
     function persistExtensionStates() {
         const map = {};
         for (const [extension, group] of Object.entries(extensionCheckboxes)) {
             const extCB = group.checkbox;
-            // Only store a concrete on/off; skip indeterminate to avoid forcing next time
             if (!extCB.indeterminate) {
                 map[extension] = !!extCB.checked;
             }
@@ -241,13 +284,16 @@ function displayDirectoryStructure(tree) {
         const extentionCheckboxesContainer = document.getElementById('extentionCheckboxes');
         extentionCheckboxesContainer.innerHTML = '';
         extentionCheckboxesContainer.className = 'mt-4';
+
         const extentionCheckboxesContainerLabel = document.createElement('label');
         extentionCheckboxesContainerLabel.innerHTML = 'Filter by file extensions:';
         extentionCheckboxesContainerLabel.className = 'block text-sm font-medium text-gray-600';
         extentionCheckboxesContainer.appendChild(extentionCheckboxesContainerLabel);
+
         const extentionCheckboxesContainerUl = document.createElement('ul');
         extentionCheckboxesContainer.appendChild(extentionCheckboxesContainerUl);
         extentionCheckboxesContainerUl.className = 'mt-1';
+
         const sortedExtensions = Object.entries(extensionCheckboxes).sort((a, b) => b[1].children.length - a[1].children.length);
         for (const [extension, checkbox] of sortedExtensions) {
             const extCheckbox = checkbox.checkbox;
@@ -257,7 +303,6 @@ function displayDirectoryStructure(tree) {
             extCheckboxLi.appendChild(document.createTextNode('.' + extension));
             extentionCheckboxesContainerUl.appendChild(extCheckboxLi);
 
-            // Apply saved on/off state to the extension checkbox UI
             if (Object.prototype.hasOwnProperty.call(savedExtensionStates, extension)) {
                 extCheckbox.checked = !!savedExtensionStates[extension];
                 extCheckbox.indeterminate = false;
@@ -270,27 +315,114 @@ function displayDirectoryStructure(tree) {
                     child.indeterminate = false;
                     updateParentCheckbox(child);
                 });
-                // Persist change
                 persistExtensionStates();
             });
         }
     }
 
+    function isDirectoryNode(node) {
+        return !(node && typeof node.type === 'string');
+    }
+
+    function getInitialSizeBytes(item) {
+        if (typeof item.size === 'number') return item.size;
+        if (typeof item.sizeBytes === 'number') return item.sizeBytes;
+        return 0;
+    }
+
+    function computeAllSizes(node) {
+        if (!node || typeof node !== 'object') return 0;
+        if (!isDirectoryNode(node)) {
+            const s = node.sizeBytes || 0;
+            sizeCache.set(node, s);
+            return s;
+        }
+        let sum = 0;
+        for (const child of Object.values(node)) {
+            sum += computeAllSizes(child);
+        }
+        sizeCache.set(node, sum);
+        return sum;
+    }
+
+    function getNodeSizeBytes(node) {
+        if (!node || typeof node !== 'object') return 0;
+        const cached = sizeCache.get(node);
+        if (typeof cached === 'number') return cached;
+        return computeAllSizes(node);
+    }
+
+    function formatBytes(n) {
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let i = 0;
+        let v = n || 0;
+        while (v >= 1024 && i < units.length - 1) {
+            v = v / 1024;
+            i += 1;
+        }
+        if (i === 0) return `${v} ${units[i]}`;
+        return `${v.toFixed(1)} ${units[i]}`;
+    }
+
+    function scalePercent(value, max) {
+        if (!max || max <= 0) return 0;
+        const pct = (value / max) * 100;
+        if (pct > 0 && pct < 2) return 2;
+        return Math.max(0, Math.min(100, Math.round(pct)));
+    }
+
+    function createSizeBar(percent, visible) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ml-3 grow max-w-[12rem]';
+        const track = document.createElement('div');
+        track.className = 'w-full h-2 bg-gray-200 rounded overflow-hidden sizebar';
+        if (!visible) track.classList.add('hidden');
+        const fill = document.createElement('div');
+        fill.className = 'h-2 bg-blue-500';
+        fill.style.width = `${percent}%`;
+        track.appendChild(fill);
+        wrap.appendChild(track);
+        return wrap;
+    }
+
+    function ensureSizeControls(initial) {
+        const host = document.getElementById('extentionCheckboxes');
+        const controls = document.createElement('div');
+        controls.className = 'mt-3';
+        const label = document.createElement('label');
+        label.className = 'inline-flex items-center text-sm text-gray-600';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.className = 'mr-2';
+        toggle.checked = !!initial;
+        label.appendChild(toggle);
+        label.appendChild(document.createTextNode('Show size bars'));
+        controls.appendChild(label);
+        host.appendChild(controls);
+
+        toggle.addEventListener('change', function() {
+            const bars = document.querySelectorAll('#directoryStructure .sizebar');
+            bars.forEach(el => {
+                if (this.checked) el.classList.remove('hidden');
+                else el.classList.add('hidden');
+            });
+            saveSettings({ showSizeBars: this.checked });
+        });
+    }
+
     lucide.createIcons();
 }
 
-// Sort contents alphabetically and by directory/file
 function sortContents(a, b) {
     if (!a || !b || !a.path || !b.path) return 0;
-    
     const aPath = a.path.split('/');
     const bPath = b.path.split('/');
     const minLength = Math.min(aPath.length, bPath.length);
 
     for (let i = 0; i < minLength; i++) {
         if (aPath[i] !== bPath[i]) {
-            if (i === aPath.length - 1 && i < bPath.length - 1) return 1; // a is a directory, b is a file or subdirectory
-            if (i === bPath.length - 1 && i < aPath.length - 1) return -1;  // b is a directory, a is a file or subdirectory
+            if (i === aPath.length - 1 && i < bPath.length - 1) return 1;
+            if (i === bPath.length - 1 && i < aPath.length - 1) return -1;
             return aPath[i].localeCompare(bPath[i]);
         }
     }
@@ -298,21 +430,17 @@ function sortContents(a, b) {
     return aPath.length - bPath.length;
 }
 
-// Get selected files from the directory structure
 function getSelectedFiles() {
     const checkboxes = document.querySelectorAll('#directoryStructure input[type="checkbox"]:checked:not(.directory-checkbox)');
     return Array.from(checkboxes).map(checkbox => JSON.parse(checkbox.value));
 }
 
-// Format repository contents into a single text
 function formatRepoContents(contents) {
     let text = '';
     let index = '';
 
-    // Ensure contents is an array before sorting
     contents = Array.isArray(contents) ? contents.sort(sortContents) : [contents];
 
-    // Create a directory tree structure
     const tree = {};
     contents.forEach(item => {
         const parts = item.path.split('/');
@@ -325,7 +453,6 @@ function formatRepoContents(contents) {
         });
     });
 
-    // Build the index recursively
     function buildIndex(node, prefix = '') {
         let result = '';
         const entries = Object.entries(node);
@@ -333,9 +460,7 @@ function formatRepoContents(contents) {
             const isLastItem = index === entries.length - 1;
             const linePrefix = isLastItem ? '└── ' : '├── ';
             const childPrefix = isLastItem ? '    ' : '│   ';
-
             name = name === '' ? './' : name;
-
             result += `${prefix}${linePrefix}${name}\n`;
             if (subNode) {
                 result += buildIndex(subNode, `${prefix}${childPrefix}`);

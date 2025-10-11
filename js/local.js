@@ -1,13 +1,9 @@
 import { displayDirectoryStructure, sortContents, getSelectedFiles, formatRepoContents } from './utils.js';
 import { extractZipContents } from './zip-utils.js';
 
-// Add at the top of the file with other imports
 let pathZipMap = {};
 
-// Event listener for directory selection
 document.getElementById('directoryPicker').addEventListener('change', handleDirectorySelection);
-
-// Event listener for zip file selection
 document.getElementById('zipPicker').addEventListener('change', handleZipSelection);
 
 async function handleDirectorySelection(event) {
@@ -22,7 +18,8 @@ async function handleDirectorySelection(event) {
             path: filePath,
             type: 'blob',
             urlType: 'directory',
-            url: URL.createObjectURL(file)
+            url: URL.createObjectURL(file),
+            size: file.size
         });
         if (file.webkitRelativePath.endsWith('.gitignore')) {
             const gitignoreReader = new FileReader();
@@ -48,20 +45,30 @@ async function handleDirectorySelection(event) {
     filterAndDisplayTree(tree, gitignoreContent);
 }
 
-// Handle zip file selection
 async function handleZipSelection(event) {
     const file = event.target.files[0];
     if (!file) return;
 
     try {
-        // Clear the directory picker
         document.getElementById('directoryPicker').value = '';
 
-        // Extract zip contents and update the global pathZipMap
         const { tree, gitignoreContent, pathZipMap: extractedPathZipMap } = await extractZipContents(file);
-        pathZipMap = extractedPathZipMap;  // Update the global variable
-        
-        // Filter and display the tree
+        pathZipMap = extractedPathZipMap;
+
+        try {
+            tree.forEach(item => {
+                if (item && item.type === 'blob') {
+                    const rel = item.path.startsWith('/') ? item.path.slice(1) : item.path;
+                    const z = pathZipMap[rel];
+                    if (z && typeof z.uncompressedSize === 'number') {
+                        item.size = z.uncompressedSize;
+                    } else if (z && z._data && typeof z._data.uncompressedSize === 'number') {
+                        item.size = z._data.uncompressedSize;
+                    }
+                }
+            });
+        } catch (_) {}
+
         filterAndDisplayTree(tree, gitignoreContent);
     } catch (error) {
         const outputText = document.getElementById('outputText');
@@ -74,20 +81,12 @@ async function handleZipSelection(event) {
 }
 
 function filterAndDisplayTree(tree, gitignoreContent) {
-    // Filter tree based on gitignore rules
     const filteredTree = tree.filter(file => !isIgnored(file.path, gitignoreContent));
-
-    // Sort the tree
     filteredTree.sort(sortContents);
-
-    // Display the directory structure
     displayDirectoryStructure(filteredTree);
-
-    // Show the generate text button
     document.getElementById('generateTextButton').style.display = 'flex';
 }
 
-// Event listener for generating text file
 document.getElementById('generateTextButton').addEventListener('click', async function () {
     const outputText = document.getElementById('outputText');
     outputText.value = '';
@@ -112,7 +111,6 @@ document.getElementById('generateTextButton').addEventListener('click', async fu
     }
 });
 
-// Modify fetchFileContents to handle both URL and text content
 async function fetchFileContents(files) {
     const contents = await Promise.all(files.map(async file => {
         if (file.urlType === 'zip') {
@@ -120,7 +118,6 @@ async function fetchFileContents(files) {
             const text = await pathZipMap[relativePath].async('text');
             return { url: file.url, path: relativePath, text };
         } else {
-            // Fetch content from URL (from directory)
             const response = await fetch(file.url);
             if (!response.ok) {
                 throw new Error(`Failed to fetch file: ${file.path}`);
@@ -132,7 +129,6 @@ async function fetchFileContents(files) {
     return contents;
 }
 
-// Initialize Lucide icons
 document.addEventListener('DOMContentLoaded', function() {
     lucide.createIcons();
 });
@@ -140,18 +136,10 @@ document.addEventListener('DOMContentLoaded', function() {
 function isIgnored(filePath, gitignoreRules) {
     return gitignoreRules.some(rule => {
         try {
-            // Convert gitignore rule to regex
-            let pattern = rule.replace(/\./g, '\\.')  // Escape dots
-                            .replace(/\*/g, '.*')   // Convert * to .*
-                            .replace(/\?/g, '.')    // Convert ? to .
-                            .replace(/\/$/, '(/.*)?$')  // Handle directory matches
-                            .replace(/^\//, '^');   // Handle root-level matches
-
-            // If the rule doesn't start with ^, it can match anywhere in the path
+            let pattern = rule.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\/$/, '(/.*)?$').replace(/^\//, '^');
             if (!pattern.startsWith('^')) {
                 pattern = `(^|/)${pattern}`;
             }
-
             const regex = new RegExp(pattern);
             return regex.test(filePath);
         } catch (error) {
@@ -162,9 +150,7 @@ function isIgnored(filePath, gitignoreRules) {
     });
 }
 
-// Function to copy text to clipboard with fallback
 function copyToClipboard(text) {
-    // Try using the modern Clipboard API first
     if (navigator.clipboard && window.isSecureContext) {
         return navigator.clipboard.writeText(text)
             .then(() => console.log('Text copied to clipboard'))
@@ -173,7 +159,6 @@ function copyToClipboard(text) {
                 return false;
             });
     } else {
-        // Fallback to older execCommand method
         try {
             const textArea = document.createElement('textarea');
             textArea.value = text;
@@ -199,7 +184,6 @@ function copyToClipboard(text) {
     }
 }
 
-// Event listener for copying text to clipboard
 document.getElementById('copyButton').addEventListener('click', function () {
     const outputText = document.getElementById('outputText');
     outputText.select();
@@ -207,7 +191,6 @@ document.getElementById('copyButton').addEventListener('click', function () {
         .catch(err => console.error('Failed to copy text: ', err));
 });
 
-// Event listener for downloading text file
 document.getElementById('downloadButton').addEventListener('click', function () {
     const outputText = document.getElementById('outputText').value;
     if (!outputText.trim()) {
