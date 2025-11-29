@@ -145,6 +145,20 @@ function displayDirectoryStructure(tree) {
             }
             checkbox.checked = shouldCheck;
 
+            try {
+                const valueObj = {
+                    path: item.path && item.path.startsWith('/') ? item.path.slice(1) : item.path,
+                    url: item.url,
+                    urlType: item.urlType,
+                    type: item.type,
+                    size: typeof item.size === 'number' ? item.size : item.sizeBytes
+                };
+                checkbox.value = JSON.stringify(valueObj);
+            } catch (e) {
+                console.error('Failed to serialize file item for checkbox value:', item, e);
+                checkbox.value = '';
+            }
+
             if (!(extension in extensionCheckboxes)) {
                 extensionCheckboxes[extension] = {
                     checkbox: createExtensionCheckbox(extension),
@@ -432,7 +446,18 @@ function sortContents(a, b) {
 
 function getSelectedFiles() {
     const checkboxes = document.querySelectorAll('#directoryStructure input[type="checkbox"]:checked:not(.directory-checkbox)');
-    return Array.from(checkboxes).map(checkbox => JSON.parse(checkbox.value));
+    const files = [];
+    Array.from(checkboxes).forEach(checkbox => {
+        const value = checkbox.value;
+        if (!value) return;
+        try {
+            const parsed = JSON.parse(value);
+            files.push(parsed);
+        } catch (e) {
+            console.error('Failed to parse selected file from checkbox value:', value, e);
+        }
+    });
+    return files;
 }
 
 function formatRepoContents(contents) {

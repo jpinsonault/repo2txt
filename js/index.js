@@ -1,12 +1,10 @@
 import { displayDirectoryStructure, getSelectedFiles, formatRepoContents, loadSettings, saveSettings } from './utils.js';
 
-// Load saved settings (token, URL, token-info state) on page load
 document.addEventListener('DOMContentLoaded', function() {
     lucide.createIcons();
     setupShowMoreInfoButton();
     loadSavedSettings();
 
-    // Input persistence as user types
     const repoUrlInput = document.getElementById('repoUrl');
     const accessTokenInput = document.getElementById('accessToken');
     if (repoUrlInput) {
@@ -20,29 +18,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // One-click button
     const oneClickButton = document.getElementById('oneClickButton');
     if (oneClickButton) {
         oneClickButton.addEventListener('click', runOneClickFlow);
     }
 });
 
-/** Robust copy helper:
- *  1) navigator.clipboard.writeText (secure contexts)
- *  2) execCommand('copy') on a temporary textarea
- *  3) Final fallback: select #outputText and prompt user to press Ctrl/Cmd+C
- *  Returns true if copied automatically; false if user needs to press Ctrl/Cmd+C
- */
 async function copyToClipboard(text) {
-    // Try modern API
     try {
         if (navigator.clipboard && window.isSecureContext) {
             await navigator.clipboard.writeText(text);
             return true;
         }
-    } catch (_) { /* continue */ }
+    } catch (_) {}
 
-    // Try execCommand on a temp textarea (not display:none)
     try {
         const ta = document.createElement('textarea');
         ta.value = text;
@@ -57,9 +46,8 @@ async function copyToClipboard(text) {
         const ok = document.execCommand('copy');
         document.body.removeChild(ta);
         if (ok) return true;
-    } catch (_) { /* continue */ }
+    } catch (_) {}
 
-    // Final fallback: select the visible outputText and ask the user to press Ctrl/Cmd+C
     const output = document.getElementById('outputText');
     if (output) {
         output.focus();
@@ -91,6 +79,7 @@ function setButtonBusy(button, busyText = 'Working…') {
     </svg>${busyText}`;
     lucide.createIcons();
 }
+
 function clearButtonBusy(button, successText) {
     if (!button) return;
     if (successText) {
@@ -119,12 +108,10 @@ async function runOneClickFlow() {
     const outputText = document.getElementById('outputText');
     outputText.value = '';
 
-    // Persist inputs
     saveToken(accessToken);
     saveSettings({ repoUrl });
 
     try {
-        // 1) Fetch and display structure
         const { owner, repo, lastString } = parseRepoUrl(repoUrl);
         let refFromUrl = '';
         let pathFromUrl = '';
@@ -148,7 +135,6 @@ async function runOneClickFlow() {
         document.getElementById('generateTextButton').style.display = 'flex';
         document.getElementById('downloadZipButton').style.display = 'flex';
 
-        // 2) Generate text using current (saved/default) extension selections
         setButtonBusy(oneClickButton, 'Generating…');
         const selectedFiles = getSelectedFiles();
         if (selectedFiles.length === 0) {
@@ -160,7 +146,6 @@ async function runOneClickFlow() {
         document.getElementById('copyButton').style.display = 'flex';
         document.getElementById('downloadButton').style.display = 'flex';
 
-        // 3) Copy to clipboard (with graceful fallback)
         setButtonBusy(oneClickButton, 'Copying…');
         const copied = await copyToClipboard(formattedText);
 
@@ -170,6 +155,7 @@ async function runOneClickFlow() {
             clearButtonBusy(oneClickButton, 'Press Ctrl/Cmd+C');
         }
     } catch (error) {
+        console.error('Error in one-click flow:', error);
         clearButtonBusy(oneClickButton);
         outputText.value = `Error in one-click flow: ${error.message}\n\n` +
             "Please ensure:\n" +
@@ -184,19 +170,16 @@ async function runOneClickFlow() {
 function loadSavedSettings() {
     const settings = loadSettings();
 
-    // Token: prefer new settings object; fall back to old key for backward compatibility
     const legacyToken = localStorage.getItem('githubAccessToken');
     const savedToken = settings.githubAccessToken || legacyToken || '';
     if (savedToken) {
         document.getElementById('accessToken').value = savedToken;
     }
 
-    // Repo URL
     if (settings.repoUrl) {
         document.getElementById('repoUrl').value = settings.repoUrl;
     }
 
-    // Token info expanded/collapsed state
     const tokenInfo = document.getElementById('tokenInfo');
     const showMoreInfoButton = document.getElementById('showMoreInfo');
     if (settings.tokenInfoOpen) {
@@ -205,7 +188,6 @@ function loadSavedSettings() {
     }
 }
 
-// Save token (persist both new settings object and legacy key)
 function saveToken(token) {
     if (token) {
         localStorage.setItem('githubAccessToken', token);
@@ -216,13 +198,11 @@ function saveToken(token) {
     }
 }
 
-// Event listener for form submission (manual flow)
 document.getElementById('repoForm').addEventListener('submit', async function (e) {
     e.preventDefault();
     const repoUrl = document.getElementById('repoUrl').value;
     const accessToken = document.getElementById('accessToken').value;
 
-    // Save token and repo URL automatically
     saveToken(accessToken);
     saveSettings({ repoUrl });
 
@@ -230,7 +210,6 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
     outputText.value = '';
 
     try {
-        // Parse repository URL and fetch repository contents
         const { owner, repo, lastString } = parseRepoUrl(repoUrl);
         let refFromUrl = '';
         let pathFromUrl = '';
@@ -255,6 +234,7 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
         document.getElementById('generateTextButton').style.display = 'flex';
         document.getElementById('downloadZipButton').style.display = 'flex';
     } catch (error) {
+        console.error('Error fetching repository contents:', error);
         outputText.value = `Error fetching repository contents: ${error.message}\n\n` +
             "Please ensure:\n" +
             "1. The repository URL is correct and accessible.\n" +
@@ -264,13 +244,11 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
     }
 });
 
-// Event listener for generating text file (manual)
 document.getElementById('generateTextButton').addEventListener('click', async function () {
     const accessToken = document.getElementById('accessToken').value;
     const outputText = document.getElementById('outputText');
     outputText.value = '';
 
-    // Save token automatically
     saveToken(accessToken);
 
     try {
@@ -285,6 +263,7 @@ document.getElementById('generateTextButton').addEventListener('click', async fu
         document.getElementById('copyButton').style.display = 'flex';
         document.getElementById('downloadButton').style.display = 'flex';
     } catch (error) {
+        console.error('Error generating text file:', error);
         outputText.value = `Error generating text file: ${error.message}\n\n` +
             "Please ensure:\n" +
             "1. You have selected at least one file from the directory structure.\n" +
@@ -294,7 +273,6 @@ document.getElementById('generateTextButton').addEventListener('click', async fu
     }
 });
 
-// Event listener for downloading zip file
 document.getElementById('downloadZipButton').addEventListener('click', async function () {
     const accessToken = document.getElementById('accessToken').value;
 
@@ -306,6 +284,7 @@ document.getElementById('downloadZipButton').addEventListener('click', async fun
         const fileContents = await fetchFileContents(selectedFiles, accessToken);
         await createAndDownloadZip(fileContents);
     } catch (error) {
+        console.error('Error generating zip file:', error);
         const outputText = document.getElementById('outputText');
         outputText.value = `Error generating zip file: ${error.message}\n\n` +
             "Please ensure:\n" +
@@ -316,18 +295,15 @@ document.getElementById('downloadZipButton').addEventListener('click', async fun
     }
 });
 
-// Event listener for copying text to clipboard (manual) — uses the same robust helper
 document.getElementById('copyButton').addEventListener('click', async function (e) {
     const text = document.getElementById('outputText').value;
     if (!text) return;
     const ok = await copyToClipboard(text);
     if (!ok) {
-        // Show a gentle hint on the button
         flashButtonMessage(e.currentTarget, 'Press Ctrl/Cmd+C');
     }
 });
 
-// Event listener for downloading text file
 document.getElementById('downloadButton').addEventListener('click', function () {
     const outputText = document.getElementById('outputText').value;
     if (!outputText.trim()) {
@@ -343,8 +319,6 @@ document.getElementById('downloadButton').addEventListener('click', function () 
         a.download = 'prompt.txt';
         document.body.appendChild(a);
         a.click();
-        
-        // Clean up after a delay to ensure the download starts
         setTimeout(() => {
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
@@ -355,14 +329,12 @@ document.getElementById('downloadButton').addEventListener('click', function () 
     }
 });
 
-// Parse GitHub repository URL
 function parseRepoUrl(url) {
     url = url.replace(/\/$/, '');
     const urlPattern = /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)(\/tree\/(.+))?$/;
     const match = url.match(urlPattern);
     if (!match) {
-        throw new Error('Invalid GitHub repository URL. Please ensure the URL is in the correct format: ' +
-            'https://github.com/owner/repo or https://github.com/owner/repo/tree/branch/path');
+        throw new Error('Invalid GitHub repository URL. Please ensure the URL is in the correct format: https://github.com/owner/repo or https://github.com/owner/repo/tree/branch/path');
     }
     return {
         owner: match[1],
@@ -371,7 +343,6 @@ function parseRepoUrl(url) {
     };
 }
 
-// Fetch repository references
 async function getReferences(owner, repo, token) {
     const headers = {
         'Accept': 'application/vnd.github+json'
@@ -393,12 +364,11 @@ async function getReferences(owner, repo, token) {
     const tags = await tagsResponse.json();
 
     return {
-        branches: branches.map(b => b.ref.split("/").slice(2).join("/")),
-        tags: tags.map(t => t.ref.split("/").slice(2).join("/"))
+        branches: branches.map(b => b.ref.split('/').slice(2).join('/')),
+        tags: tags.map(t => t.ref.split('/').slice(2).join('/'))
     };
 }
 
-// Fetch repository SHA
 async function fetchRepoSha(owner, repo, ref, path, token) {
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path ? `${path}` : ''}${ref ? `?ref=${ref}` : ''}`;
     const headers = {
@@ -409,13 +379,12 @@ async function fetchRepoSha(owner, repo, ref, path, token) {
     }
     const response = await fetch(url, { headers });
     if (!response.ok) {
-        handleFetchError(response);
+        await handleFetchError(response);
     }
     const data = await response.json();
     return data.sha;
 }
 
-// Fetch repository tree
 async function fetchRepoTree(owner, repo, sha, token) {
     const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`;
     const headers = {
@@ -426,24 +395,60 @@ async function fetchRepoTree(owner, repo, sha, token) {
     }
     const response = await fetch(url, { headers });
     if (!response.ok) {
-        handleFetchError(response);
+        await handleFetchError(response);
     }
     const data = await response.json();
     return data.tree;
 }
 
-// Handle fetch errors
-function handleFetchError(response) {
+async function handleFetchError(response) {
+    let bodyText = '';
+    try {
+        const clone = response.clone();
+        bodyText = await clone.text();
+    } catch (e) {
+        console.error('Failed to read error response body:', e);
+    }
+
+    console.error('GitHub fetch error:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: bodyText
+    });
+
     if (response.status === 403 && response.headers.get('X-RateLimit-Remaining') === '0') {
         throw new Error('GitHub API rate limit exceeded. Please try again later or provide a valid access token to increase your rate limit.');
     }
     if (response.status === 404) {
-        throw new Error(`Repository, branch, or path not found. Please check that the URL, branch/tag, and path are correct and accessible.`);
+        throw new Error('Repository, branch, or path not found. Please check that the URL, branch/tag, and path are correct and accessible.');
     }
-    throw new Error(`Failed to fetch repository data. Status: ${response.status}. Please check your input and try again.`);
+
+    let detail = '';
+
+    if (bodyText) {
+        try {
+            const parsed = JSON.parse(bodyText);
+            if (parsed && typeof parsed.message === 'string') {
+                detail = parsed.message;
+            }
+        } catch (_) {
+            if (bodyText.length < 500) {
+                detail = bodyText;
+            }
+        }
+    }
+
+    let base = `Failed to fetch repository data. Status: ${response.status}`;
+    if (response.statusText) {
+        base += ` ${response.statusText}`;
+    }
+    if (detail) {
+        base += `. Details: ${detail}`;
+    }
+
+    throw new Error(base);
 }
 
-// Fetch contents of selected files
 async function fetchFileContents(files, token) {
     const headers = {
         'Accept': 'application/vnd.github.v3.raw'
@@ -454,7 +459,7 @@ async function fetchFileContents(files, token) {
     const contents = await Promise.all(files.map(async file => {
         const response = await fetch(file.url, { headers });
         if (!response.ok) {
-            handleFetchError(response);
+            await handleFetchError(response);
         }
         const text = await response.text();
         return { url: file.url, path: file.path, text };
@@ -470,7 +475,6 @@ function setupShowMoreInfoButton() {
         tokenInfo.classList.toggle('hidden');
         updateInfoIcon(this, tokenInfo);
 
-        // Persist whether the panel is open
         const isOpen = !tokenInfo.classList.contains('hidden');
         saveSettings({ tokenInfoOpen: isOpen });
     });
@@ -484,17 +488,15 @@ function updateInfoIcon(button, tokenInfo) {
     }
 }
 
-// Create and download zip file
 async function createAndDownloadZip(fileContents) {
     const zip = new JSZip();
 
     fileContents.forEach(file => {
-        // Remove leading slash if present
         const filePath = file.path.startsWith('/') ? file.path.slice(1) : file.path;
         zip.file(filePath, file.text);
     });
 
-    const content = await zip.generateAsync({type: "blob"});
+    const content = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(content);
     const a = document.createElement('a');
     a.href = url;
